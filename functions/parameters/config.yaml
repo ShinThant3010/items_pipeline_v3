@@ -1,0 +1,37 @@
+project_id: poc-piloturl-nonprod
+region: asia-southeast1
+gcs_bucket: gs://poc-piloturl-hyde-item-pipeline/
+bq_default_dataset: gold_layer
+batch_paths:
+  batch_root: gs://poc-piloturl-hyde-item-pipeline/batch_root/
+  delete_root: gs://poc-piloturl-hyde-item-pipeline/batch_root/delete/
+filters:
+  restricts_fields:
+  - level
+  - category_id
+  - category_name
+  - sub_cat_name
+  - skill_name
+  - status
+  - university
+  numeric_restricts_fields:
+  - created_at
+  - updated_at
+embedding:
+  model_name: gemini-embedding-001
+  output_dimensionality: 768
+  sparse_dimensions: 30000
+  enable_bm25: true
+  text_fields:
+  - lesson_title
+  - content_title
+  - short_description
+  - description
+  metadata_fields:
+  - id
+  - link
+  - lesson_title
+resource_names:
+  index_id: projects/810737581373/locations/asia-southeast1/indexes/1586384172648235008
+  endpoint_id: '6600913659306704896'
+  deployed_index_id: items_deployed
