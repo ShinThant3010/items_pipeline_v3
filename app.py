@@ -7,13 +7,14 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
 from functions.utils.config import load_config
-from functions.core.vertex_index import (
-    create_index,
-    create_endpoint,
-    deploy_index,
-    search_index,
+from functions.core.vertex_index import create_index, create_endpoint, deploy_index
+from functions.core.search import search_index
+from functions.core.index_updates import (
+    embed_data,
+    batch_update,
+    streaming_update,
+    streaming_delete,
 )
-from functions.core.embedding import embed_data, batch_update, streaming_update, streaming_delete
 
 load_dotenv()
 app = FastAPI(title="Vertex AI Vector Search Pipeline API", version="1.0.0")
@@ -52,24 +53,13 @@ class CreateIndexRequest(BaseModel):
     display_name: str
     description: str | None = None
     dimensions: int
-    distance_measure_type: str = Field(default="DOT_PRODUCT")
-    index_update_method: str = Field(default="BATCH_UPDATE")
     shard_size: str = Field(default="SHARD_SIZE_SMALL")
-    sparse_dimensions: int | None = None
-    hybrid_config: dict | None = None
-
-
-class CreateEndpointRequest(BaseModel):
-    display_name: str
-    description: str | None = None
-
-
-class DeployIndexRequest(BaseModel):
-    index_id: str
-    deployed_index_id: str
-    min_replica_count: int = 1
-    max_replica_count: int = 1
-    enable_hybrid_search: bool = True
+    distance_measure_type: str = Field(default="DOT_PRODUCT")
+    feature_norm_type: str = Field(default="UNIT_L2_NORM")
+    index_update_method: str = Field(default="STREAM_UPDATE")
+    approximate_neighbors_count: int = Field(default=150)
+    leaf_node_embedding_count: int = Field(default=1000)
+    leaf_nodes_to_search_percent: int = Field(default=5)
 
 
 class EmbedDataRequest(BaseModel):
@@ -78,6 +68,27 @@ class EmbedDataRequest(BaseModel):
     where: str
     gcs_output_prefix: str
     use_bm25: bool = True
+
+
+class StreamingDatapoint(BaseModel):
+    id: str
+    embedding: list[float]
+    sparse_embedding: dict | None = None
+    restricts: list[dict] | None = None
+    numeric_restricts: list[dict] | None = None
+    embedding_metadata: dict | None = None
+
+
+class StreamingUpdateRequest(BaseModel):
+    index_id: str | None = None
+    datapoints_source: str = "api"
+    datapoints: list[StreamingDatapoint] | None = None
+    datapoints_gcs_prefix: str | None = None
+
+
+class StreamingDeleteRequest(BaseModel):
+    index_id: str | None = None
+    datapoint_ids: list[str]
 
 
 class BatchUpdateRequest(BaseModel):
@@ -92,64 +103,43 @@ class BatchUpdateRequest(BaseModel):
     use_preembedded: bool = False
 
 
+class CreateEndpointRequest(BaseModel):
+    display_name: str
+    description: str | None = None
+    public_endpoint_enabled: bool = True
+
+
+class DeployIndexRequest(BaseModel):
+    endpoint_id: str
+    index_id: str
+    deployed_index_id: str
+    min_replica_count: int = 1
+    max_replica_count: int = 1
+    enable_hybrid_search: bool = True
+
+
 class SearchRequest(BaseModel):
     endpoint_id: str | None = None
     deployed_index_id: str | None = None
     query: str
     top_k: int = 10
     use_bm25: bool = False
+    rrf_alpha: float | None = None
 
 
-class StreamingDatapoint(BaseModel):
-    id: str
-    embedding: list[float]
-    sparse_embedding: dict | None = None
-    restricts: list[dict] | None = None
-    numeric_restricts: list[dict] | None = None
-    embedding_metadata: dict | None = None
-    crowding_tag: str | None = None
+@app.get("/health")
+def health_check():
+    return {"status": "ok"}
 
 
-class StreamingUpdateRequest(BaseModel):
-    index_id: str | None = None
-    datapoints: list[StreamingDatapoint]
-
-
-class StreamingDeleteRequest(BaseModel):
-    index_id: str | None = None
-    datapoint_ids: list[str]
-
-
-@app.post("/v1/indexes")
+@app.post("/v1/index/create")
 def api_create_index(req: CreateIndexRequest):
     return create_index(config, req.model_dump())
-
-
-@app.post("/v1/endpoints")
-def api_create_endpoint(req: CreateEndpointRequest):
-    return create_endpoint(config, req.model_dump())
-
-
-@app.post("/v1/endpoints/{endpoint_id}/deploy")
-def api_deploy_index(endpoint_id: str, req: DeployIndexRequest):
-    payload = req.model_dump()
-    payload["endpoint_id"] = endpoint_id
-    return deploy_index(config, payload)
 
 
 @app.post("/v1/embed_data")
 def api_embed_data(req: EmbedDataRequest):
     return embed_data(config, req.model_dump())
-
-
-@app.post("/v1/batch/updates")
-def api_batch_update(req: BatchUpdateRequest):
-    return batch_update(config, req.model_dump())
-
-
-@app.post("/v1/search")
-def api_search(req: SearchRequest):
-    return search_index(config, req.model_dump())
 
 
 @app.post("/v1/streaming/update")
@@ -160,3 +150,23 @@ def api_streaming_update(req: StreamingUpdateRequest):
 @app.post("/v1/streaming/delete")
 def api_streaming_delete(req: StreamingDeleteRequest):
     return streaming_delete(config, req.model_dump())
+
+
+@app.post("/v1/batch/updates")
+def api_batch_update(req: BatchUpdateRequest):
+    return batch_update(config, req.model_dump())
+
+
+@app.post("/v1/endpoint/create")
+def api_create_endpoint(req: CreateEndpointRequest):
+    return create_endpoint(config, req.model_dump())
+
+
+@app.post("/v1/endpoint/deploy")
+def api_deploy_index(req: DeployIndexRequest):
+    return deploy_index(config, req.model_dump())
+
+
+@app.post("/v1/search")
+def api_search(req: SearchRequest):
+    return search_index(config, req.model_dump())

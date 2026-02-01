@@ -1,6 +1,7 @@
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -25,6 +26,7 @@ class AppConfig:
     deployed_index_id: str
     batch_root: str
     batch_delete_root: str
+    index_defaults: dict[str, Any]
 
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[1] / "parameters" / "config.yaml"
@@ -56,6 +58,7 @@ def load_config(path: str | os.PathLike | None = None) -> AppConfig:
         deployed_index_id=raw.get("resource_names", {}).get("deployed_index_id", ""),
         batch_root=raw.get("batch_paths", {}).get("batch_root", ""),
         batch_delete_root=raw.get("batch_paths", {}).get("delete_root", ""),
+        index_defaults=raw.get("index_defaults", {}) or {},
     )
 
 

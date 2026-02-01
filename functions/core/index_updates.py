@@ -18,8 +18,15 @@ from vertexai.language_models import TextEmbeddingInput, TextEmbeddingModel
 from functions.utils.config import AppConfig
 
 _TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
+"""
+    Core Functions in API call: 
+        1) embed_data
+        2) streaming_update
+        3) streaming_delete
+        4) batch_update
+"""
 
-
+# used in embed_data, streaming_update/_load_datapoints_payload, batch_update
 def _parse_gcs_prefix(prefix: str) -> tuple[str, str]:
     """Split a gs:// URI into bucket and object prefix."""
     if not prefix.startswith("gs://"):
@@ -28,7 +35,7 @@ def _parse_gcs_prefix(prefix: str) -> tuple[str, str]:
     bucket, _, path = remainder.partition("/")
     return bucket, path
 
-
+# used in embed_data/_build_numeric_restricts
 def _parse_timestamp(value: Any) -> int | None:
     """Parse timestamps into epoch seconds, if possible."""
     if value is None or value == "":
@@ -44,12 +51,12 @@ def _parse_timestamp(value: Any) -> int | None:
             continue
     return None
 
-
+# used in embed_data/_build_bm25
 def _tokenize(text: str) -> list[str]:
     """Lowercase and tokenize text into alphanumeric terms."""
     return _TOKEN_RE.findall(text.lower())
 
-
+# used in embed_data
 def _build_bm25(
     texts: list[str],
     sparse_dimensions: int,
@@ -88,7 +95,7 @@ def _build_bm25(
 
     return sparse_vectors
 
-
+# used in embed_data
 def _build_restricts(config: AppConfig, row: dict[str, Any]) -> list[dict[str, Any]]:
     """Create categorical restricts from configured fields."""
     restricts: list[dict[str, Any]] = []
@@ -104,7 +111,7 @@ def _build_restricts(config: AppConfig, row: dict[str, Any]) -> list[dict[str, A
             restricts.append({"namespace": field, "allow": allow})
     return restricts
 
-
+# used in embed_data
 def _build_numeric_restricts(config: AppConfig, row: dict[str, Any]) -> list[dict[str, Any]]:
     """Create numeric restricts (including timestamp fields)."""
     numeric_restricts: list[dict[str, Any]] = []
@@ -119,12 +126,12 @@ def _build_numeric_restricts(config: AppConfig, row: dict[str, Any]) -> list[dic
             numeric_restricts.append({"namespace": field, "value_int": int(value)})
     return numeric_restricts
 
-
+# used in embed_data
 def _build_metadata(config: AppConfig, row: dict[str, Any]) -> dict[str, Any]:
     """Select metadata fields to return with search results."""
     return {field: row.get(field) for field in config.embedding_metadata_fields if field in row}
 
-
+# used in embed_data
 def _build_text(config: AppConfig, row: dict[str, Any]) -> str:
     """Concatenate embedding text fields into a single document string."""
     parts: list[str] = []
@@ -135,7 +142,7 @@ def _build_text(config: AppConfig, row: dict[str, Any]) -> str:
         parts.append(str(value))
     return "\n".join(parts)
 
-
+# used in embed_data
 def _rows_from_bq(table: str, where_clause: str) -> Iterable[dict[str, Any]]:
     """Yield BigQuery rows as dictionaries for the given WHERE clause."""
     client = bigquery.Client()
@@ -143,7 +150,7 @@ def _rows_from_bq(table: str, where_clause: str) -> Iterable[dict[str, Any]]:
     for row in client.query(query):
         yield dict(row.items())
 
-
+# used in embed_data
 def _write_jsonl_to_gcs(bucket_name: str, prefix: str, items: list[dict[str, Any]]) -> str:
     """Write JSONL embeddings to GCS and return the object URI."""
     storage_client = storage.Client()
@@ -155,7 +162,7 @@ def _write_jsonl_to_gcs(bucket_name: str, prefix: str, items: list[dict[str, Any
     bucket.blob(blob_name).upload_from_filename(str(temp_path))
     return f"gs://{bucket_name}/{blob_name}"
 
-
+# used in batch_update
 def _list_gcs_files(bucket_name: str, prefix: str) -> list[str]:
     """List files under a GCS prefix and return their URIs."""
     storage_client = storage.Client()
@@ -164,7 +171,7 @@ def _list_gcs_files(bucket_name: str, prefix: str) -> list[str]:
     uris = [f"gs://{bucket_name}/{blob.name}" for blob in blobs if not blob.name.endswith("/")]
     return uris
 
-
+# used in streaming_update/_build_index_datapoints
 def _struct_from_dict(data: dict[str, Any] | None) -> Struct | None:
     """Convert a dict into a protobuf Struct."""
     if not data:
@@ -173,15 +180,38 @@ def _struct_from_dict(data: dict[str, Any] | None) -> Struct | None:
     struct.update(data)
     return struct
 
+# used in streaming_update 
+def _load_datapoints_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Load datapoints from API payload or a GCS folder."""
+    source = payload.get("datapoints_source", "api")
+    if source == "gcs":
+        gcs_prefix = payload.get("datapoints_gcs_prefix")
+        if not gcs_prefix:
+            raise ValueError("datapoints_gcs_prefix is required when datapoints_source is gcs")
+        bucket_name, prefix = _parse_gcs_prefix(gcs_prefix)
+        storage_client = storage.Client()
+        bucket = storage_client.bucket(bucket_name)
+        items: list[dict[str, Any]] = []
+        for blob in bucket.list_blobs(prefix=prefix.rstrip("/") + "/"):
+            if blob.name.endswith("/"):
+                continue
+            content = blob.download_as_text()
+            line_count = 0
+            for line in content.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                line_count += 1
+                items.append(json.loads(line))
+            print(f"Loaded {line_count} lines from gs://{bucket_name}/{blob.name}")
+        return items
+    return payload.get("datapoints", [])
 
-def streaming_update(config: AppConfig, payload: dict[str, Any]) -> dict[str, Any]:
-    """Streamingly upsert datapoints into a Vector Search index."""
-    index_id = payload.get("index_id") or config.index_id
-    if not index_id:
-        raise ValueError("index_id is required for streaming update")
-
+# used in streaming_update 
+def _build_index_datapoints(items: list[dict[str, Any]]) -> list[gca_index.IndexDatapoint]:
+    """Convert dict payloads into IndexDatapoint objects."""
     datapoints: list[gca_index.IndexDatapoint] = []
-    for item in payload.get("datapoints", []):
+    for item in items:
         sparse = item.get("sparse_embedding") or {}
         embedding_metadata = _struct_from_dict(item.get("embedding_metadata"))
 
@@ -211,39 +241,10 @@ def streaming_update(config: AppConfig, payload: dict[str, Any]) -> dict[str, An
                 else None,
                 restricts=restricts,
                 numeric_restricts=numeric_restricts,
-                crowding_tag=item.get("crowding_tag"),
                 embedding_metadata=embedding_metadata,
             )
         )
-
-    aiplatform.init(project=config.project_id, location=config.region)
-    index = aiplatform.MatchingEngineIndex(index_name=index_id)
-    index.upsert_datapoints(datapoints=datapoints)
-
-    return {
-        "index_id": index_id,
-        "upserted": len(datapoints),
-    }
-
-
-def streaming_delete(config: AppConfig, payload: dict[str, Any]) -> dict[str, Any]:
-    """Streamingly delete datapoints from a Vector Search index."""
-    index_id = payload.get("index_id") or config.index_id
-    if not index_id:
-        raise ValueError("index_id is required for streaming delete")
-
-    ids = [str(item) for item in payload.get("datapoint_ids", [])]
-    if not ids:
-        raise ValueError("datapoint_ids must not be empty")
-
-    aiplatform.init(project=config.project_id, location=config.region)
-    index = aiplatform.MatchingEngineIndex(index_name=index_id)
-    index.remove_datapoints(datapoint_ids=ids)
-
-    return {
-        "index_id": index_id,
-        "deleted": len(ids),
-    }
+    return datapoints
 
 
 def embed_data(config: AppConfig, payload: dict[str, Any]) -> dict[str, Any]:
@@ -299,6 +300,45 @@ def embed_data(config: AppConfig, payload: dict[str, Any]) -> dict[str, Any]:
         "gcs_output_prefix": gcs_prefix,
         "gcs_output_file": gcs_uri,
         "row_count": len(rows),
+    }
+
+
+def streaming_update(config: AppConfig, payload: dict[str, Any]) -> dict[str, Any]:
+    """Streamingly upsert datapoints into a Vector Search index."""
+    index_id = payload.get("index_id") or config.index_id
+    if not index_id:
+        raise ValueError("index_id is required for streaming update")
+
+    items = _load_datapoints_payload(payload)
+    datapoints = _build_index_datapoints(items)
+
+    aiplatform.init(project=config.project_id, location=config.region)
+    index = aiplatform.MatchingEngineIndex(index_name=index_id)
+    index.upsert_datapoints(datapoints=datapoints)
+
+    return {
+        "index_id": index_id,
+        "upserted": len(datapoints),
+    }
+
+
+def streaming_delete(config: AppConfig, payload: dict[str, Any]) -> dict[str, Any]:
+    """Streamingly delete datapoints from a Vector Search index."""
+    index_id = payload.get("index_id") or config.index_id
+    if not index_id:
+        raise ValueError("index_id is required for streaming delete")
+
+    ids = [str(item) for item in payload.get("datapoint_ids", [])]
+    if not ids:
+        raise ValueError("datapoint_ids must not be empty")
+
+    aiplatform.init(project=config.project_id, location=config.region)
+    index = aiplatform.MatchingEngineIndex(index_name=index_id)
+    index.remove_datapoints(datapoint_ids=ids)
+
+    return {
+        "index_id": index_id,
+        "deleted": len(ids),
     }
 
 

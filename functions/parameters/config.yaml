@@ -35,3 +35,11 @@ resource_names:
   index_id: projects/810737581373/locations/asia-southeast1/indexes/1586384172648235008
   endpoint_id: '6600913659306704896'
   deployed_index_id: items_deployed
+index_defaults:
+  shard_size: SHARD_SIZE_SMALL
+  distance_measure_type: DOT_PRODUCT
+  feature_norm_type: UNIT_L2_NORM
+  index_update_method: STREAM_UPDATE
+  approximate_neighbors_count: 150
+  leaf_node_embedding_count: 1000
+  leaf_nodes_to_search_percent: 5
