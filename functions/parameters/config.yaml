@@ -19,9 +19,7 @@ filters:
   - updated_at
 embedding:
   model_name: gemini-embedding-001
-  output_dimensionality: 768
-  sparse_dimensions: 30000
-  enable_bm25: true
+  output_dimensionality: 1000
   text_fields:
   - lesson_title
   - content_title
@@ -32,8 +30,8 @@ embedding:
   - link
   - lesson_title
 resource_names:
-  index_id: projects/810737581373/locations/asia-southeast1/indexes/1586384172648235008
-  endpoint_id: '6600913659306704896'
+  index_id: projects/810737581373/locations/asia-southeast1/indexes/8740365374865801216
+  endpoint_id: projects/810737581373/locations/asia-southeast1/indexEndpoints/2127009641979183104
   deployed_index_id: items_deployed
 index_defaults:
   shard_size: SHARD_SIZE_SMALL

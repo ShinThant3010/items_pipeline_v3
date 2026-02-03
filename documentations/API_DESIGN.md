@@ -18,12 +18,7 @@ Request:
   "dimensions": 768,
   "distance_measure_type": "DOT_PRODUCT",
   "index_update_method": "BATCH_UPDATE",
-  "shard_size": "SHARD_SIZE_SMALL",
-  "sparse_dimensions": 30000,
-  "hybrid_config": {
-    "enable_bm25": true,
-    "bm25_tokenizer": "STANDARD"
-  }
+  "shard_size": "SHARD_SIZE_SMALL"
 }
 ```
 
@@ -63,8 +58,7 @@ Request:
   "index_id": "projects/.../locations/.../indexes/...",
   "deployed_index_id": "items-deployed",
   "min_replica_count": 1,
-  "max_replica_count": 1,
-  "enable_hybrid_search": true
+  "max_replica_count": 1
 }
 ```
 
@@ -84,21 +78,19 @@ Query BigQuery, embed, and write JSON (one object per line) to GCS.
 Request:
 ```json
 {
-  "run_id": "2026-01-26-weekly",
   "bigquery_table": "project.dataset.table",
   "where": "updated_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY)",
-  "gcs_output_prefix": "gs://bucket/path/run_id/",
-  "use_bm25": true
+  "gcs_output_prefix": "gs://bucket/path/",
+  "dimension": 768
 }
 ```
 
 Response:
 ```json
 {
-  "run_id": "2026-01-26-weekly",
   "status": "EMBEDDED",
-  "gcs_output_prefix": "gs://bucket/path/run_id/",
-  "gcs_output_file": "gs://bucket/path/run_id/part-00000.json",
+  "gcs_output_prefix": "gs://bucket/path/",
+  "gcs_output_file": "gs://bucket/path/part-00000.json",
   "row_count": 11890
 }
 ```
@@ -106,41 +98,37 @@ Response:
 ## Batch CRUD Endpoints
 
 ### POST /batch/updates
-Start a batch update (scheduled weekly or manual/ad‑hoc).
+Start a batch update using pre-embedded JSONL in GCS.
 
 Request:
 ```json
 {
-  "run_id": "2026-01-26-weekly",
-  "update_type": "SCHEDULED",
-  "source": {
-    "bigquery_table": "project.dataset.table",
-    "where": "updated_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY)"
-  },
-  "gcs_output_prefix": "gs://bucket/path/run_id/",
-  "mode": "UPSERT",
-  "delete_policy": "SOFT_DELETE"
+  "index_id": "projects/.../locations/.../indexes/...",
+  "contents_delta_uri": "gs://bucket/path/",
+  "is_complete_overwrite": false
 }
 ```
 
 Response:
 ```json
 {
-  "run_id": "2026-01-26-weekly",
-  "status": "STARTED"
+  "status": "STARTED",
+  "index_id": "projects/.../locations/.../indexes/...",
+  "files": ["gs://bucket/path/part-00000.json"],
+  "contents_delta_uri": "gs://bucket/path/"
 }
 ```
 
 Notes:
 - `update_type` supports `SCHEDULED` (weekly) or `MANUAL` (ad‑hoc)
 
-### GET /batch/updates/{run_id}
+### GET /batch/updates/{id}
 Get batch run status.
 
 Response:
 ```json
 {
-  "run_id": "2026-01-26-weekly",
+  "id": "batch-1",
   "status": "SUCCEEDED",
   "counts": {
     "read": 12000,
@@ -155,7 +143,7 @@ Response:
 
 Counts description:
 - `read`: rows pulled from BigQuery for this run
-- `embedded`: rows successfully embedded (dense and sparse)
+- `embedded`: rows successfully embedded
 - `written`: rows written to GCS JSON shards
 - `ingested`: rows accepted by Vertex AI batch update
 - Any of the above can be lower than `read` due to validation failures, embedding errors, or ingestion rejects
@@ -163,15 +151,14 @@ Counts description:
 ## Search Endpoint
 
 ### POST /search
-Search the deployed index with optional BM25/hybrid scoring.
+Search the deployed index with dense vector similarity.
 
 Request:
 ```json
 {
   "endpoint_id": "projects/.../locations/.../indexEndpoints/...",
   "query": "intro to python",
-  "top_k": 10,
-  "use_bm25": false
+  "top_k": 10
 }
 ```
 
@@ -179,7 +166,6 @@ Response:
 ```json
 {
   "query": "intro to python",
-  "use_bm25": false,
   "results": [
     {
       "id": "01KAWP7409ZH98683BM8SRW2C1",
@@ -193,13 +179,13 @@ Response:
 }
 ```
 
-### POST /batch/updates/{run_id}/cancel
+### POST /batch/updates/{id}/cancel
 Cancel a running batch update.
 
 Response:
 ```json
 {
-  "run_id": "2026-01-26-weekly",
+  "id": "batch-1",
   "status": "CANCELLED"
 }
 ```
@@ -217,5 +203,4 @@ Response:
 
 ## Notes
 - Batch updates write JSON to GCS and then trigger Vertex AI index update
-- Hybrid search requires dense and sparse vectors in item payload
 - DOT_PRODUCT and L2_NORM supported for dense vector scoring

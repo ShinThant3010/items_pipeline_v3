@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import json
-import math
-import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
@@ -17,7 +15,6 @@ from vertexai.language_models import TextEmbeddingInput, TextEmbeddingModel
 
 from functions.utils.config import AppConfig
 
-_TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
 """
     Core Functions in API call: 
         1) embed_data
@@ -50,50 +47,6 @@ def _parse_timestamp(value: Any) -> int | None:
         except ValueError:
             continue
     return None
-
-# used in embed_data/_build_bm25
-def _tokenize(text: str) -> list[str]:
-    """Lowercase and tokenize text into alphanumeric terms."""
-    return _TOKEN_RE.findall(text.lower())
-
-# used in embed_data
-def _build_bm25(
-    texts: list[str],
-    sparse_dimensions: int,
-    k1: float = 1.2,
-    b: float = 0.75,
-) -> list[dict[str, list[float | int]]]:
-    """Build sparse BM25-like vectors using hashed term buckets."""
-    doc_tokens = [_tokenize(text) for text in texts]
-    doc_lengths = [len(tokens) for tokens in doc_tokens]
-    avgdl = sum(doc_lengths) / max(len(doc_lengths), 1)
-
-    df: dict[str, int] = {}
-    for tokens in doc_tokens:
-        for term in set(tokens):
-            df[term] = df.get(term, 0) + 1
-
-    total_docs = len(doc_tokens)
-    sparse_vectors: list[dict[str, list[float | int]]] = []
-    for tokens, dl in zip(doc_tokens, doc_lengths):
-        term_freq: dict[str, int] = {}
-        for term in tokens:
-            term_freq[term] = term_freq.get(term, 0) + 1
-
-        bucket_scores: dict[int, float] = {}
-        for term, tf in term_freq.items():
-            term_df = df.get(term, 1)
-            idf = math.log((total_docs - term_df + 0.5) / (term_df + 0.5) + 1)
-            denom = tf + k1 * (1 - b + b * (dl / max(avgdl, 1)))
-            score = idf * ((tf * (k1 + 1)) / denom)
-            idx = hash(term) % sparse_dimensions
-            bucket_scores[idx] = bucket_scores.get(idx, 0.0) + score
-
-        dimensions = list(bucket_scores.keys())
-        values = [bucket_scores[idx] for idx in dimensions]
-        sparse_vectors.append({"dimensions": dimensions, "values": values})
-
-    return sparse_vectors
 
 # used in embed_data
 def _build_restricts(config: AppConfig, row: dict[str, Any]) -> list[dict[str, Any]]:
@@ -212,7 +165,6 @@ def _build_index_datapoints(items: list[dict[str, Any]]) -> list[gca_index.Index
     """Convert dict payloads into IndexDatapoint objects."""
     datapoints: list[gca_index.IndexDatapoint] = []
     for item in items:
-        sparse = item.get("sparse_embedding") or {}
         embedding_metadata = _struct_from_dict(item.get("embedding_metadata"))
 
         restricts: list[gca_index.IndexDatapoint.Restriction] = []
@@ -233,12 +185,6 @@ def _build_index_datapoints(items: list[dict[str, Any]]) -> list[gca_index.Index
             gca_index.IndexDatapoint(
                 datapoint_id=str(item.get("id")),
                 feature_vector=item.get("embedding", []),
-                sparse_embedding=gca_index.IndexDatapoint.SparseEmbedding(
-                    dimensions=sparse.get("dimensions", []),
-                    values=sparse.get("values", []),
-                )
-                if sparse
-                else None,
                 restricts=restricts,
                 numeric_restricts=numeric_restricts,
                 embedding_metadata=embedding_metadata,
@@ -249,26 +195,20 @@ def _build_index_datapoints(items: list[dict[str, Any]]) -> list[gca_index.Index
 
 def embed_data(config: AppConfig, payload: dict[str, Any]) -> dict[str, Any]:
     """Query BigQuery, embed records, and write JSONL to GCS."""
-    use_bm25 = bool(payload.get("use_bm25", config.embedding_enable_bm25))
     rows = list(_rows_from_bq(payload["bigquery_table"], payload["where"]))
     texts = [_build_text(config, row) for row in rows]
 
     vertexai.init(project=config.project_id, location=config.region)
     model = TextEmbeddingModel.from_pretrained(config.embedding_model_name)
     inputs = [TextEmbeddingInput(text=text, task_type="RETRIEVAL_DOCUMENT") for text in texts]
+    output_dimensionality = int(payload.get("dimension", config.embedding_output_dimensionality))
     embeddings = model.get_embeddings(
         inputs,
-        output_dimensionality=config.embedding_output_dimensionality,
+        output_dimensionality=output_dimensionality,
     )
 
-    sparse_vectors: list[dict[str, list[float | int]]] = []
-    if use_bm25 and config.embedding_sparse_dimensions > 0:
-        sparse_vectors = _build_bm25(texts, config.embedding_sparse_dimensions)
-    else:
-        sparse_vectors = [{} for _ in texts]
-
     json_items: list[dict[str, Any]] = []
-    for row, embedding, sparse in zip(rows, embeddings, sparse_vectors):
+    for row, embedding in zip(rows, embeddings):
         entry: dict[str, Any] = {
             "id": str(row.get("id")),
             "embedding": embedding.values,
@@ -283,9 +223,6 @@ def embed_data(config: AppConfig, payload: dict[str, Any]) -> dict[str, Any]:
         if numeric_restricts:
             entry["numeric_restricts"] = numeric_restricts
 
-        if sparse and sparse.get("dimensions") and sparse.get("values"):
-            entry["sparse_embedding"] = sparse
-
         json_items.append(entry)
 
     gcs_prefix = payload.get("gcs_output_prefix") or config.batch_root
@@ -295,7 +232,6 @@ def embed_data(config: AppConfig, payload: dict[str, Any]) -> dict[str, Any]:
     gcs_uri = _write_jsonl_to_gcs(bucket, path, json_items)
 
     return {
-        "run_id": payload.get("run_id"),
         "status": "EMBEDDED",
         "gcs_output_prefix": gcs_prefix,
         "gcs_output_file": gcs_uri,
@@ -343,18 +279,14 @@ def streaming_delete(config: AppConfig, payload: dict[str, Any]) -> dict[str, An
 
 
 def batch_update(config: AppConfig, payload: dict[str, Any]) -> dict[str, Any]:
-    """Run batch CRUD update using GCS staging + Vertex AI update."""
-    use_preembedded = bool(payload.get("use_preembedded", False))
-    embed_result = None
-    if not use_preembedded:
-        embed_result = embed_data(config, payload)
+    """Run batch update using pre-embedded JSONL in GCS."""
     index_id = payload.get("index_id") or config.index_id
     if not index_id:
         raise ValueError("index_id is required for batch update")
 
-    gcs_prefix = payload.get("gcs_output_prefix") or config.batch_root
+    gcs_prefix = payload.get("contents_delta_uri") or config.batch_root
     if not gcs_prefix:
-        raise ValueError("gcs_output_prefix is required for batch update")
+        raise ValueError("contents_delta_uri is required for batch update")
     bucket, path = _parse_gcs_prefix(gcs_prefix)
     files = _list_gcs_files(bucket, path)
     if not files:
@@ -367,15 +299,11 @@ def batch_update(config: AppConfig, payload: dict[str, Any]) -> dict[str, Any]:
     index = aiplatform.MatchingEngineIndex(index_name=index_id)
     index.update_embeddings(
         contents_delta_uri=gcs_prefix,
-        is_complete_overwrite=False,
+        is_complete_overwrite=bool(payload.get("is_complete_overwrite", False)),
     )
     return {
-        "run_id": payload.get("run_id"),
         "status": "STARTED",
-        "update_type": payload.get("update_type"),
-        "embedding": embed_result,
-        "used_preembedded": use_preembedded,
         "index_id": index_id,
         "files": files,
-        "gcs_output_prefix": gcs_prefix,
+        "contents_delta_uri": gcs_prefix,
     }

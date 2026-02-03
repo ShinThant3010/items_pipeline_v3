@@ -6,7 +6,7 @@ This pipeline is a backend API that orchestrates Vertex AI Vector Search (index 
 ## Goals
 - Provide API endpoints to create index, create endpoint, deploy index to endpoint
 - Support weekly batch CRUD updates and manual/ad‑hoc updates
-- Enable hybrid search: dense + sparse vectors, dot product + L2 norm, BM25
+- Dense vector search with dot product + L2 norm
 - Maintain update audit log in Cloud SQL
 
 ## Non‑Goals (initial)
@@ -25,8 +25,7 @@ This pipeline is a backend API that orchestrates Vertex AI Vector Search (index 
   - Queries BigQuery for source data
   - Builds canonical item JSON
 - **Embedding Service**
-  - Generates dense and sparse embeddings
-  - Supports hybrid search setup (dense+BM25)
+  - Generates dense embeddings
 - **GCS Staging**
   - Stores JSON files for batch ingestion
 - **Vertex AI Vector Search**
@@ -43,8 +42,7 @@ This pipeline is a backend API that orchestrates Vertex AI Vector Search (index 
 ## Data Contracts
 - **Item JSON**
   - Required identifiers: `item_id`, `namespace` (or index namespace)
-  - Payload: text fields for BM25, metadata fields, and embedding vectors
-  - Sparse vector format compatible with Vertex AI hybrid search
+  - Payload: text fields, metadata fields, and embedding vectors
 
 ## Security & Access
 - IAM‑based access control
@@ -52,14 +50,13 @@ This pipeline is a backend API that orchestrates Vertex AI Vector Search (index 
 - GCS buckets scoped to pipeline
 
 ## Reliability & Idempotency
-- Each batch update has a unique `run_id`
 - Updates are idempotent by `item_id`
 - Logs contain status, counts, timestamps, and error summaries
 
 ## Observability
 - Structured logs from API and batch jobs
 - Cloud SQL log table stores:
-  - run_id, start_ts, end_ts, status, counts, errors
+  - start_ts, end_ts, status, counts, errors
 
 ## Risks & Mitigations
 - **Large batch size** → chunked GCS JSON, per‑chunk ingestion

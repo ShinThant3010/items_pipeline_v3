@@ -46,7 +46,7 @@
 7) **Audit**: log run metadata and metrics in Cloud SQL
 
 ## Data Artifacts
-- `gs://bucket/path/run_id/part-*.json`
+- `gs://bucket/path/part-*.json`
 - Cloud SQL table: `vector_index_update_log`
 
 ## Error Handling

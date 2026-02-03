@@ -63,17 +63,15 @@ class CreateIndexRequest(BaseModel):
 
 
 class EmbedDataRequest(BaseModel):
-    run_id: str
     bigquery_table: str
     where: str
     gcs_output_prefix: str
-    use_bm25: bool = True
+    dimension: int | None = None
 
 
 class StreamingDatapoint(BaseModel):
     id: str
     embedding: list[float]
-    sparse_embedding: dict | None = None
     restricts: list[dict] | None = None
     numeric_restricts: list[dict] | None = None
     embedding_metadata: dict | None = None
@@ -92,15 +90,9 @@ class StreamingDeleteRequest(BaseModel):
 
 
 class BatchUpdateRequest(BaseModel):
-    run_id: str
-    update_type: str = Field(default="SCHEDULED")
-    bigquery_table: str
-    where: str
-    gcs_output_prefix: str
     index_id: str | None = None
-    mode: str = Field(default="UPSERT")
-    delete_policy: str = Field(default="SOFT_DELETE")
-    use_preembedded: bool = False
+    contents_delta_uri: str
+    is_complete_overwrite: bool = False
 
 
 class CreateEndpointRequest(BaseModel):
@@ -113,18 +105,19 @@ class DeployIndexRequest(BaseModel):
     endpoint_id: str
     index_id: str
     deployed_index_id: str
+    machine_type: str = "e2-standard-2"
     min_replica_count: int = 1
     max_replica_count: int = 1
-    enable_hybrid_search: bool = True
 
 
 class SearchRequest(BaseModel):
     endpoint_id: str | None = None
     deployed_index_id: str | None = None
-    query: str
+    query: str | list[float]
+    query_type: str = "vector"
     top_k: int = 10
-    use_bm25: bool = False
-    rrf_alpha: float | None = None
+    metadata_gcs_prefix: str | None = None
+    restricts: list[dict] | None = None
 
 
 @app.get("/health")

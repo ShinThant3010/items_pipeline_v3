@@ -1,47 +1,15 @@
 from __future__ import annotations
 
-import re
+import json
 from typing import Any
 
 from google.cloud import aiplatform
+from google.cloud.aiplatform.matching_engine.matching_engine_index_endpoint import Namespace
+from google.cloud import storage
 import vertexai
 from vertexai.language_models import TextEmbeddingInput, TextEmbeddingModel
 
 from functions.utils.config import AppConfig
-
-try:
-    from google.cloud.aiplatform.matching_engine.matching_engine_index_endpoint import HybridQuery
-    _HYBRID_AVAILABLE = True
-except ImportError:  # pragma: no cover - depends on SDK version
-    HybridQuery = None
-    _HYBRID_AVAILABLE = False
-
-_TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
-
-
-def _tokenize(text: str) -> list[str]:
-    """Lowercase and tokenize text into alphanumeric terms."""
-    return _TOKEN_RE.findall(text.lower())
-
-
-def _build_sparse_query(config: AppConfig, text: str) -> tuple[list[int], list[float]]:
-    """Build a sparse keyword query vector using hashed term buckets."""
-    tokens = _tokenize(text)
-    if not tokens:
-        return [], []
-
-    term_freq: dict[str, int] = {}
-    for term in tokens:
-        term_freq[term] = term_freq.get(term, 0) + 1
-
-    bucket_scores: dict[int, float] = {}
-    for term, tf in term_freq.items():
-        idx = hash(term) % max(config.embedding_sparse_dimensions, 1)
-        bucket_scores[idx] = bucket_scores.get(idx, 0.0) + float(tf)
-
-    dimensions = list(bucket_scores.keys())
-    values = [bucket_scores[idx] for idx in dimensions]
-    return dimensions, values
 
 
 def _extract_neighbor(neighbor: Any) -> dict[str, Any]:
@@ -64,63 +32,114 @@ def _extract_neighbor(neighbor: Any) -> dict[str, Any]:
     }
 
 
+def _build_namespace_filters(restricts: list[dict[str, Any]] | None) -> list[Namespace]:
+    filters: list[Namespace] = []
+    for item in restricts or []:
+        namespace = item.get("namespace") or item.get("name")
+        if not namespace:
+            continue
+        allow = item.get("allow") or item.get("allow_list") or item.get("allow_tokens") or []
+        deny = item.get("deny") or item.get("deny_list") or item.get("deny_tokens") or []
+        filters.append(Namespace(namespace, list(allow), list(deny)))
+    return filters
+
+def _parse_gcs_prefix(prefix: str) -> tuple[str, str]:
+    """Split a gs:// URI into bucket and object prefix."""
+    if not prefix.startswith("gs://"):
+        raise ValueError("metadata_gcs_prefix must start with gs://")
+    remainder = prefix[5:]
+    bucket, _, path = remainder.partition("/")
+    return bucket, path
+
+
+def _load_metadata_from_gcs(
+    gcs_prefix: str,
+    ids: set[str],
+) -> dict[str, dict[str, Any]]:
+    """Lookup embedding_metadata from JSONL files in GCS for given ids."""
+    if not ids:
+        return {}
+
+    bucket_name, prefix = _parse_gcs_prefix(gcs_prefix)
+    storage_client = storage.Client()
+    bucket = storage_client.bucket(bucket_name)
+    found: dict[str, dict[str, Any]] = {}
+
+    for blob in bucket.list_blobs(prefix=prefix.rstrip("/") + "/"):
+        if blob.name.endswith("/"):
+            continue
+        content = blob.download_as_text()
+        for line in content.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            record = json.loads(line)
+            if not isinstance(record, dict):
+                continue
+            record_id = str(record.get("id", ""))
+            if record_id in ids and record.get("embedding_metadata"):
+                found[record_id] = record["embedding_metadata"]
+                if len(found) == len(ids):
+                    return found
+    return found
+
+
 def search_index(config: AppConfig, payload: dict[str, Any]) -> dict[str, Any]:
-    """Search the deployed index with dense or hybrid keyword queries."""
+    """Search the deployed index with dense embeddings only."""
     endpoint_id = payload.get("endpoint_id") or config.endpoint_id
     deployed_index_id = payload.get("deployed_index_id") or config.deployed_index_id
     if not endpoint_id or not deployed_index_id:
         raise ValueError("endpoint_id and deployed_index_id are required")
 
-    query_text = payload.get("query", "")
+    query_type = (payload.get("query_type") or "vector").lower()
+    query = payload.get("query", "")
     top_k = int(payload.get("top_k", 10))
-    use_bm25 = bool(payload.get("use_bm25", False))
-    rrf_alpha = payload.get("rrf_alpha")
+    metadata_gcs_prefix = payload.get("metadata_gcs_prefix") or config.batch_root
+    restricts = payload.get("restricts")
 
-    vertexai.init(project=config.project_id, location=config.region)
-    model = TextEmbeddingModel.from_pretrained(config.embedding_model_name)
-    embedding = model.get_embeddings(
-        [TextEmbeddingInput(text=query_text, task_type="RETRIEVAL_QUERY")],
-        output_dimensionality=config.embedding_output_dimensionality,
-    )[0]
+    if query_type == "text":
+        if not isinstance(query, str):
+            raise ValueError("query must be a string when query_type is 'text'")
+        vertexai.init(project=config.project_id, location=config.region)
+        model = TextEmbeddingModel.from_pretrained(config.embedding_model_name)
+        embedding = model.get_embeddings(
+            [TextEmbeddingInput(text=query, task_type="RETRIEVAL_QUERY")],
+            output_dimensionality=config.embedding_output_dimensionality,
+        )[0]
+        embedding_values = embedding.values
+    elif query_type == "vector":
+        if not isinstance(query, list) or not all(isinstance(v, (float, int)) for v in query):
+            raise ValueError("query must be a list of numbers when query_type is 'vector'")
+        embedding_values = [float(v) for v in query]
+    else:
+        raise ValueError("query_type must be 'text' or 'vector'")
 
     aiplatform.init(project=config.project_id, location=config.region)
     endpoint = aiplatform.MatchingEngineIndexEndpoint(index_endpoint_name=endpoint_id)
-
-    if use_bm25:
-        if not _HYBRID_AVAILABLE:
-            raise NotImplementedError(
-                "Hybrid search is not supported by the installed google-cloud-aiplatform SDK. "
-                "Upgrade google-cloud-aiplatform to a version that includes HybridQuery."
-            )
-
-        dimensions, values = _build_sparse_query(config, query_text)
-        query = HybridQuery(
-            dense_embedding=embedding.values,
-            sparse_embedding_dimensions=dimensions,
-            sparse_embedding_values=values,
-            rrf_ranking_alpha=rrf_alpha,
-        )
-        neighbors = endpoint.find_neighbors(
-            deployed_index_id=deployed_index_id,
-            queries=[query],
-            num_neighbors=top_k,
-            return_full_datapoint=True,
-        )
-    else:
-        neighbors = endpoint.find_neighbors(
-            deployed_index_id=deployed_index_id,
-            queries=[embedding.values],
-            num_neighbors=top_k,
-            return_full_datapoint=True,
-        )
+    filters = _build_namespace_filters(restricts)
+    neighbors = endpoint.find_neighbors(
+        deployed_index_id=deployed_index_id,
+        queries=[embedding_values],
+        num_neighbors=top_k,
+        return_full_datapoint=True,
+        filter=filters or None,
+    )
 
     results = []
     if neighbors:
         results = [_extract_neighbor(n) for n in neighbors[0]]
 
+    missing_ids = {item["id"] for item in results if not item.get("metadata") and item.get("id")}
+    if missing_ids and metadata_gcs_prefix:
+        metadata = _load_metadata_from_gcs(metadata_gcs_prefix, missing_ids)
+        if metadata:
+            for item in results:
+                item_id = item.get("id")
+                if item_id in metadata and not item.get("metadata"):
+                    item["metadata"] = metadata[item_id]
+
     return {
-        "query": query_text,
-        "use_bm25": use_bm25,
+        "query": query,
+        "query_type": query_type,
         "results": results,
     }
-

@@ -19,8 +19,6 @@ class AppConfig:
     embedding_metadata_fields: list[str]
     embedding_model_name: str
     embedding_output_dimensionality: int
-    embedding_sparse_dimensions: int
-    embedding_enable_bm25: bool
     index_id: str
     endpoint_id: str
     deployed_index_id: str
@@ -51,8 +49,6 @@ def load_config(path: str | os.PathLike | None = None) -> AppConfig:
         embedding_metadata_fields=raw.get("embedding", {}).get("metadata_fields", []),
         embedding_model_name=raw.get("embedding", {}).get("model_name", "gemini-embedding-001"),
         embedding_output_dimensionality=int(raw.get("embedding", {}).get("output_dimensionality", 768)),
-        embedding_sparse_dimensions=int(raw.get("embedding", {}).get("sparse_dimensions", 30000)),
-        embedding_enable_bm25=bool(raw.get("embedding", {}).get("enable_bm25", True)),
         index_id=raw.get("resource_names", {}).get("index_id", ""),
         endpoint_id=raw.get("resource_names", {}).get("endpoint_id", ""),
         deployed_index_id=raw.get("resource_names", {}).get("deployed_index_id", ""),
