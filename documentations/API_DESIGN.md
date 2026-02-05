@@ -1,13 +1,24 @@
 # API Design
 
+## Base URLs
+
+**Production (Cloud Run):**  
+`https://hyde-item-pipeline-api-<project>.run.app`
+
+**Staging (Cloud Run):**  
+`https://hyde-item-pipeline-api-<env>.run.app`
+
+**Local (Uvicorn/FastAPI):**  
+`http://127.0.0.1:8080`
+
+**Swagger/OpenAPI:**  
+`https://hyde-item-pipeline-api-810737581373.asia-southeast1.run.app/docs`
+
+
+## Endpoints
 Base path: `/v1`
 
-## Authentication
-- Service‑to‑service auth (IAM / OIDC)
-
-## Lifecycle Endpoints
-
-### POST /indexes
+### POST /index/create
 Create a Vertex AI Vector Search index.
 
 Request:
@@ -16,9 +27,13 @@ Request:
   "display_name": "items-index",
   "description": "Items index",
   "dimensions": 768,
+  "shard_size": "SHARD_SIZE_SMALL",
   "distance_measure_type": "DOT_PRODUCT",
-  "index_update_method": "BATCH_UPDATE",
-  "shard_size": "SHARD_SIZE_SMALL"
+  "feature_norm_type": "UNIT_L2_NORM",
+  "index_update_method": "STREAM_UPDATE",
+  "approximate_neighbors_count": 150,
+  "leaf_node_embedding_count": 1000,
+  "leaf_nodes_to_search_percent": 5
 }
 ```
 
@@ -29,48 +44,8 @@ Response:
   "status": "CREATED"
 }
 ```
-
-### POST /endpoints
-Create a Vector Search endpoint.
-
-Request:
-```json
-{
-  "display_name": "items-endpoint",
-  "description": "Endpoint for items index"
-}
-```
-
-Response:
-```json
-{
-  "endpoint_id": "projects/.../locations/.../indexEndpoints/...",
-  "status": "CREATED"
-}
-```
-
-### POST /endpoints/{endpoint_id}/deploy
-Deploy an index to an endpoint.
-
-Request:
-```json
-{
-  "index_id": "projects/.../locations/.../indexes/...",
-  "deployed_index_id": "items-deployed",
-  "min_replica_count": 1,
-  "max_replica_count": 1
-}
-```
-
-Response:
-```json
-{
-  "deployed_index_id": "items-deployed",
-  "status": "DEPLOYED"
-}
-```
-
-## Data Preparation Endpoints
+Notes:
+- Required fields: `display_name`, `dimensions`
 
 ### POST /embed_data
 Query BigQuery, embed, and write JSON (one object per line) to GCS.
@@ -91,11 +66,79 @@ Response:
   "status": "EMBEDDED",
   "gcs_output_prefix": "gs://bucket/path/",
   "gcs_output_file": "gs://bucket/path/part-00000.json",
-  "row_count": 11890
+  "row_count": 1000
+}
+```
+Notes:
+- Embedded vectors are normalized using L2-normalization
+
+### POST /streaming/update
+Upsert/Update data points to index
+
+Request (datapoints_souce: gcs):
+```json
+{
+  "index_id": "projects/.../locations/.../indexes/...",
+  "datapoints_source": "gcs",
+  "datapoints_gcs_prefix": "gs://bucket/path/"
 }
 ```
 
-## Batch CRUD Endpoints
+Request (datapoints_souce: api):
+```json
+{
+  "index_id": "projects/.../locations/.../indexes/...",
+  "datapoints_source": "api",
+  "datapoints": [
+    {
+      "id": "...",
+      "embedding": [0.0157, -0.0113, 0.0268, ...],
+      "restricts": [
+        {"namespace": "level", "allow": ["Intermediate"]}
+        ,...
+      ],
+      "embedding_metadata": {
+        "id": "...",
+        "description": "description"
+      } 
+    } 
+  ]
+  , ...
+}
+
+
+```
+
+Response:
+```json
+{
+  "index_id": "projects/.../locations/.../indexes/...",
+  "upserted": 100
+}
+```
+
+### POST /streaming/delete
+delete datapoints from index
+
+Request:
+```json
+{
+  "index_id": "projects/.../locations/.../indexes/...",
+  "datapoint_ids": [
+    "01KAWP7412YBV991H15H14CKJV"
+  ]
+}
+```
+
+```
+
+Response:
+```json
+{
+  "index_id": "projects/.../locations/.../indexes/...",
+  "deleted": 1
+}
+```
 
 ### POST /batch/updates
 Start a batch update using pre-embedded JSONL in GCS.
@@ -119,49 +162,79 @@ Response:
 }
 ```
 
-Notes:
-- `update_type` supports `SCHEDULED` (weekly) or `MANUAL` (ad‑hoc)
+### POST /endpoint
+Create a Vector Search endpoint.
 
-### GET /batch/updates/{id}
-Get batch run status.
+Request:
+```json
+{
+  "display_name": "items-endpoint",
+  "description": "Endpoint for items index",
+  "public_endpoint_enabled": true
+}
+```
 
 Response:
 ```json
 {
-  "id": "batch-1",
-  "status": "SUCCEEDED",
-  "counts": {
-    "read": 12000,
-    "embedded": 11890,
-    "written": 11890,
-    "ingested": 11890
-  },
-  "started_at": "2026-01-26T01:00:00Z",
-  "completed_at": "2026-01-26T01:45:00Z"
+  "endpoint_id": "projects/.../locations/.../indexEndpoints/...",
+  "status": "CREATED"
 }
 ```
 
-Counts description:
-- `read`: rows pulled from BigQuery for this run
-- `embedded`: rows successfully embedded
-- `written`: rows written to GCS JSON shards
-- `ingested`: rows accepted by Vertex AI batch update
-- Any of the above can be lower than `read` due to validation failures, embedding errors, or ingestion rejects
-
-## Search Endpoint
-
-### POST /search
-Search the deployed index with dense vector similarity.
-
-Notes:
-- Query embeddings are L2‑normalized before search.
+### POST /endpoint/deploy
+Deploy an index to an endpoint.
 
 Request:
 ```json
 {
   "endpoint_id": "projects/.../locations/.../indexEndpoints/...",
-  "query": "intro to python",
-  "top_k": 10
+  "index_id": "projects/.../locations/.../indexes/...",
+  "deployed_index_id": "items-deployed",
+  "machine_type": "e2-standard-2",
+  "min_replica_count": 1,
+  "max_replica_count": 1
+}
+```
+
+Response:
+```json
+{
+  "deployed_index_id": "items-deployed",
+  "status": "DEPLOYED"
+}
+```
+
+### POST /search
+Search the deployed index with dense vector similarity.
+
+Request (query_type: "vector"):
+```json
+{
+  "endpoint_id": "projects/.../locations/.../indexEndpoints/...",
+  "deployed_index_id": "items_deployed",
+  "query_type": "vector",
+  "query": [0.1, 0.2, 0.3, ...],
+  "top_k": 10,
+  "metadata_gcs_prefix": "gs://bucket/path/",
+  "restricts": [
+    { "namespace": "level", "allow": ["Beginner"] }
+  ]
+}
+```
+
+Request (query_type: "text"):
+```json
+{
+  "endpoint_id": "projects/.../locations/.../indexEndpoints/...",
+  "deployed_index_id": "items_deployed",
+  "query_type": "text",
+  "query": "query",
+  "top_k": 10,
+  "metadata_gcs_prefix": "gs://bucket/path/",
+  "restricts": [
+    { "namespace": "level", "allow": ["Beginner"] }
+  ]
 }
 ```
 
@@ -174,36 +247,10 @@ Response:
       "id": "01KAWP7409ZH98683BM8SRW2C1",
       "score": 0.83,
       "metadata": {
-        "lesson_title": "Programming for Everybody (Getting Started with Python)",
-        "link": "https://www.edx.org/course/programming-for-everybody-getting-started-with-pyt"
+        "lesson_title": "title",
+        "link": "https://www.edx.org/xxx"
       }
     }
   ]
 }
 ```
-
-### POST /batch/updates/{id}/cancel
-Cancel a running batch update.
-
-Response:
-```json
-{
-  "id": "batch-1",
-  "status": "CANCELLED"
-}
-```
-
-## Error Format
-```json
-{
-  "error": {
-    "code": "INVALID_ARGUMENT",
-    "message": "Missing index_id",
-    "details": {}
-  }
-}
-```
-
-## Notes
-- Batch updates write JSON to GCS and then trigger Vertex AI index update
-- DOT_PRODUCT and L2_NORM supported for dense vector scoring
