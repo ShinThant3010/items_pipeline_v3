@@ -71,6 +71,7 @@ Response:
 ```
 Notes:
 - Embedded vectors are normalized using L2-normalization
+- Set "where": true if whole table is to be embedded
 
 ### POST /streaming/update
 Upsert/Update data points to index
@@ -130,8 +131,6 @@ Request:
 }
 ```
 
-```
-
 Response:
 ```json
 {
@@ -141,7 +140,7 @@ Response:
 ```
 
 ### POST /batch/updates
-Start a batch update using pre-embedded JSONL in GCS.
+Start a batch update using pre-embedded JSONL in GCS. (currently not use because of long runtime)
 
 Request:
 ```json
@@ -208,7 +207,7 @@ Response:
 ### POST /search
 Search the deployed index with dense vector similarity.
 
-Request (query_type: "vector"):
+Request (query_type: vector):
 ```json
 {
   "endpoint_id": "projects/.../locations/.../indexEndpoints/...",
@@ -223,7 +222,7 @@ Request (query_type: "vector"):
 }
 ```
 
-Request (query_type: "text"):
+Request (query_type: text):
 ```json
 {
   "endpoint_id": "projects/.../locations/.../indexEndpoints/...",
