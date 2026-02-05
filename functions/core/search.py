@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import math
+import time
 from typing import Any
 
 from google.cloud import aiplatform
@@ -42,6 +44,12 @@ def _build_namespace_filters(restricts: list[dict[str, Any]] | None) -> list[Nam
         deny = item.get("deny") or item.get("deny_list") or item.get("deny_tokens") or []
         filters.append(Namespace(namespace, list(allow), list(deny)))
     return filters
+
+def _l2_normalize(values: list[float]) -> list[float]:
+    norm = math.sqrt(sum(v * v for v in values))
+    if norm == 0.0:
+        return values
+    return [v / norm for v in values]
 
 def _parse_gcs_prefix(prefix: str) -> tuple[str, str]:
     """Split a gs:// URI into bucket and object prefix."""
@@ -100,13 +108,15 @@ def search_index(config: AppConfig, payload: dict[str, Any]) -> dict[str, Any]:
     if query_type == "text":
         if not isinstance(query, str):
             raise ValueError("query must be a string when query_type is 'text'")
+        embed_start = time.monotonic()
         vertexai.init(project=config.project_id, location=config.region)
         model = TextEmbeddingModel.from_pretrained(config.embedding_model_name)
         embedding = model.get_embeddings(
-            [TextEmbeddingInput(text=query, task_type="RETRIEVAL_QUERY")],
+            [TextEmbeddingInput(text=query, task_type="RETRIEVAL_QUERY")],# semantic similarity task
             output_dimensionality=config.embedding_output_dimensionality,
         )[0]
-        embedding_values = embedding.values
+        print(f"[search] embed runtime_sec={time.monotonic() - embed_start:.6f}")
+        embedding_values = _l2_normalize(list(embedding.values))
     elif query_type == "vector":
         if not isinstance(query, list) or not all(isinstance(v, (float, int)) for v in query):
             raise ValueError("query must be a list of numbers when query_type is 'vector'")
@@ -117,6 +127,7 @@ def search_index(config: AppConfig, payload: dict[str, Any]) -> dict[str, Any]:
     aiplatform.init(project=config.project_id, location=config.region)
     endpoint = aiplatform.MatchingEngineIndexEndpoint(index_endpoint_name=endpoint_id)
     filters = _build_namespace_filters(restricts)
+    neighbors_start = time.monotonic()
     neighbors = endpoint.find_neighbors(
         deployed_index_id=deployed_index_id,
         queries=[embedding_values],
@@ -124,6 +135,7 @@ def search_index(config: AppConfig, payload: dict[str, Any]) -> dict[str, Any]:
         return_full_datapoint=True,
         filter=filters or None,
     )
+    print(f"[search] find_neighbors runtime_sec={time.monotonic() - neighbors_start:.6f}")
 
     results = []
     if neighbors:
@@ -131,15 +143,18 @@ def search_index(config: AppConfig, payload: dict[str, Any]) -> dict[str, Any]:
 
     missing_ids = {item["id"] for item in results if not item.get("metadata") and item.get("id")}
     if missing_ids and metadata_gcs_prefix:
+        metadata_start = time.monotonic()
         metadata = _load_metadata_from_gcs(metadata_gcs_prefix, missing_ids)
         if metadata:
             for item in results:
                 item_id = item.get("id")
                 if item_id in metadata and not item.get("metadata"):
                     item["metadata"] = metadata[item_id]
+    # print(f"[search] metadata retrieval runtime_sec={time.monotonic() - metadata_start:.6f}")
 
     return {
         "query": query,
         "query_type": query_type,
+        "num_recommendations": len(results),
         "results": results,
     }

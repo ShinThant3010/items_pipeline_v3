@@ -11,7 +11,7 @@
    v
 [Embedding Service]
    |\
-   | \ 3a) Dense embeddings (dot product / L2)
+   | \ 3a) Dense embeddings (dot product / L2; query embeddings are L2‑normalized at search time)
    |  \
    |   3b) Sparse embeddings (BM25)
    v

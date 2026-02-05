@@ -19,7 +19,7 @@ filters:
   - updated_at
 embedding:
   model_name: gemini-embedding-001
-  output_dimensionality: 1000
+  output_dimensionality: 768
   text_fields:
   - lesson_title
   - content_title

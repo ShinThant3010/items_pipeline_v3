@@ -153,6 +153,9 @@ Counts description:
 ### POST /search
 Search the deployed index with dense vector similarity.
 
+Notes:
+- Query embeddings are L2‑normalized before search.
+
 Request:
 ```json
 {

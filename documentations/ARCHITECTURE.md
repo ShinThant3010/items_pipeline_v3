@@ -6,7 +6,7 @@ This pipeline is a backend API that orchestrates Vertex AI Vector Search (index 
 ## Goals
 - Provide API endpoints to create index, create endpoint, deploy index to endpoint
 - Support weekly batch CRUD updates and manual/ad‑hoc updates
-- Dense vector search with dot product + L2 norm
+- Dense vector search with dot product + L2 norm (query embeddings are L2‑normalized at search time)
 - Maintain update audit log in Cloud SQL
 
 ## Non‑Goals (initial)
